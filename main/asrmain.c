@@ -17,116 +17,137 @@
 #include <curl/curl.h>
 #include "string.h"
 #include "common.h"
-#include "ttsmain.h"
 #include "token.h"
-#include "ttscurl.h"
+#include "asrmain.h"
 
 #include "simple_wifi.h"
 
-extern QueueHandle_t data_que;
-
 #define CONFIG_AC101_I2S_DATA_IN_PIN 35
 
-const char TTS_SCOPE[] = "audio_tts_post";
-const char API_TTS_URL[] = "http://tsn.baidu.com/text2audio"; // 可改为https
+#define XF_I2S_MAX_SIZE 2048
+#define XF_I2S_SAMPLE 70
 
-RETURN_CODE fill_config(struct tts_config *config) {
+const char ASR_SCOPE[] = "audio_voice_assistant_get";
+const char API_ASR_URL[] = "http://vop.baidu.com/server_api"; // 可改为https
+
+/**
+ * @brief
+ * @param config
+ */
+static RETURN_CODE fill_config(struct asr_config *config) {
     // 填写网页上申请的appkey 如 g_api_key="g8eBUMSokVB1BHGmgxxxxxx"
     char api_key[] = "4E1BG9lTnlSeIf1NQFlrSq6h";
     // 填写网页上申请的APP SECRET 如 $secretKey="94dc99566550d87f8fa8ece112xxxxx"
     char secret_key[] = "544ca4657ba8002e3dea3ac2f5fdd241";
+    // 需要识别的文件
+//    char *filename = "16k_test.pcm";
+//    FILE *fp = fopen(filename, "r");
+//    if (fp == NULL) {
+//        //文件不存在
+//        snprintf(g_demo_error_msg, BUFFER_ERROR_SIZE,
+//                 "current running directory does not contain file %s", filename);
+//        return ERROR_ASR_FILE_NOT_EXIST;
+//    }
+    // 文件后缀 pcm/wav/amr ,不支持其它格式
+    char format[] = "pcm";
 
-    // text 的内容为"欢迎使用百度语音合成"的urlencode,utf-8 编码
-    // 可以百度搜索"urlencode"
-    char text[] = "欢迎使用百度语音,我是小度,请问有什么可以帮助你";
-
-    // 发音人选择, 0为普通女声，1为普通男生，3为情感合成-度逍遥，4为情感合成-度丫丫，默认为普通女声
-    int per = 0;
-    // 语速，取值0-9，默认为5中语速
-    int spd = 5;
-    // #音调，取值0-9，默认为5中语调
-    int pit = 5;
-    // #音量，取值0-9，默认为5中音量
-    int vol = 5;
-    // 下载的文件格式, 3：mp3(default) 4： pcm-16k 5： pcm-8k 6. wav
-	int aue = 4;
+    //  1537 表示识别普通话，使用输入法模型。1536表示识别普通话，使用搜索模型 其它语种参见文档
+    int dev_pid = 1537;
 
     // 将上述参数填入config中
     snprintf(config->api_key, sizeof(config->api_key), "%s", api_key);
     snprintf(config->secret_key, sizeof(config->secret_key), "%s", secret_key);
-    snprintf(config->text, sizeof(text), "%s", text);
-    config->text_len = sizeof(text) - 1;
+//    config->file = fp;
+    config->file = NULL;
+    snprintf(config->format, sizeof(config->format), "%s", format);
+    config->rate = 16000; // 采样率固定值
+    config->dev_pid = dev_pid;
     snprintf(config->cuid, sizeof(config->cuid), "1234567C");
-    config->per = per;
-    config->spd = spd;
-    config->pit = pit;
-    config->vol = vol;
-	config->aue = aue;
-
-	// aue对应的格式，format
-	const char formats[4][4] = {"mp3", "pcm", "pcm", "wav"};
-	snprintf(config->format, sizeof(config->format), formats[aue - 3]);
 
     return RETURN_OK;
 }
 
+// 获取token 并调用识别接口
 RETURN_CODE run() {
-    struct tts_config config;
+    struct asr_config config;
     char token[MAX_TOKEN_SIZE];
 
     RETURN_CODE res = fill_config(&config);
     if (res == RETURN_OK) {
         // 获取token
-        res = speech_get_token(config.api_key, config.secret_key, TTS_SCOPE, token);
+        res = speech_get_token(config.api_key, config.secret_key, ASR_SCOPE, token);
         if (res == RETURN_OK) {
             // 调用识别接口
-            run_tts(&config, token);
+            run_asr(&config, token);
         }
     }
-
-    return RETURN_OK;
+    if (config.file != NULL) {
+        fclose(config.file);
+    }
+    return res;
 }
 
 // 调用识别接口
-RETURN_CODE run_tts(struct tts_config *config, const char *token) {
-    char params[200 + config->text_len * 9];
+RETURN_CODE run_asr(struct asr_config *config, const char *token) {
+    char url[300];
     CURL *curl = curl_easy_init(); // 需要释放
     char *cuid = curl_easy_escape(curl, config->cuid, strlen(config->cuid)); // 需要释放
-    char *textemp = curl_easy_escape(curl, config->text, config->text_len); // 需要释放
-	char *tex = curl_easy_escape(curl, textemp, strlen(textemp)); // 需要释放
-	curl_free(textemp);
-	char params_pattern[] = "ctp=1&lan=zh&cuid=%s&tok=%s&tex=%s&per=%d&spd=%d&pit=%d&vol=%d&aue=%d";
-    snprintf(params, sizeof(params), params_pattern , cuid, token, tex,
-             config->per, config->spd, config->pit, config->vol, config->aue);
 
-	char url[sizeof(params) + 200];
-	snprintf(url, sizeof(url), "%s?%s", API_TTS_URL, params);
-    printf("test in browser: %s\n", url);
-    curl_free(cuid);
-  	curl_free(tex);
+    snprintf(url, sizeof(url), "%s?cuid=%s&token=%s&dev_pid=%d",
+             API_ASR_URL, cuid, token, config->dev_pid);
+    free(cuid);
+    printf("request url :%s\n", url);
 
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, params);
-    curl_easy_setopt(curl, CURLOPT_URL, API_TTS_URL);
+    struct curl_slist *headerlist = NULL;
+    char header[50];
+    snprintf(header, sizeof(header), "Content-Type: audio/%s; rate=%d", config->format,
+             config->rate);
+    headerlist = curl_slist_append(headerlist, header); // 需要释放
+
+    int content_len = 0;
+    char *result = NULL;
+//    char *audio_data = read_file_data(config->file, &content_len); // 读取文件， 需要释放
+
+    char *buff = (char *) malloc(sizeof(char) * XF_I2S_MAX_SIZE * XF_I2S_SAMPLE); // 记得释放
+	char *pbuff = buff;
+	i2s_start(I2S_NUM_0);
+	for (int i = 0; i < XF_I2S_SAMPLE; i++) // 3s
+	{
+		i2s_read_bytes(I2S_NUM_0, pbuff, XF_I2S_MAX_SIZE, portMAX_DELAY);
+		i2s_write_bytes(I2S_NUM_0, pbuff, XF_I2S_MAX_SIZE, portMAX_DELAY);
+		vTaskDelay(50 / portTICK_PERIOD_MS);
+		printf("i2s_read i=%d\n", i);
+		printf("%p\n", pbuff);
+		pbuff = pbuff + XF_I2S_MAX_SIZE;
+	}
+	i2s_stop(I2S_NUM_0);
+	pbuff = NULL;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POST, 1);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5); // 连接5s超时
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60); // 整体请求60s超时
-    struct http_result result = {1, config->format ,NULL};
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback); // 检查头部
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &result);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc_data);	 // components/curl/include/curl/curl.h宏CURL_MAX_WRITE_SIZE决定最大传输长度
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerlist); // 添加http header Content-Type
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, buff); // 音频数据
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, sizeof(char) * XF_I2S_MAX_SIZE * XF_I2S_SAMPLE); // 音频数据长度
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result);  // 需要释放
-    curl_easy_setopt(curl, CURLOPT_VERBOSE, ENABLE_CURL_VERBOSE);
-    CURLcode res_curl = curl_easy_perform(curl);
 
+    CURLcode res_curl = curl_easy_perform(curl);
     RETURN_CODE res = RETURN_OK;
     if (res_curl != CURLE_OK) {
         // curl 失败
         snprintf(g_demo_error_msg, BUFFER_ERROR_SIZE, "perform curl error:%d, %s.\n", res,
                  curl_easy_strerror(res_curl));
-        res = ERROR_TTS_CURL;
+        res = ERROR_ASR_CURL;
+    } else {
+        printf("YOUR FINAL RESULT: %s\n", result);
     }
-	if (result.fp != NULL) {
-		fclose(result.fp);
-	}
+
+    curl_slist_free_all(headerlist);
+//    free(audio_data);
+    free(result);
+    free(buff);
     curl_easy_cleanup(curl);
     return res;
 }
@@ -166,19 +187,7 @@ static void audio_recorder_AC101_init()
 	i2s_stop(I2S_NUM_0);
 }
 
-//static void alexa__AC101_task(void *pvParameters)
-//{
-//	char buf[2048];
-//	int recv_len=0;
-//	i2s_start(I2S_NUM_0);
-//	while(1)
-//	{
-//		recv_len=i2s_read_bytes(I2S_NUM_0,buf,2048,0);
-//		i2s_write_bytes(I2S_NUM_0,buf,recv_len,0);
-//	}
-//}
-
-static void tts_task(void *pvParameters) {
+static void asr_task(void *pvParameters) {
 	curl_global_init(CURL_GLOBAL_ALL);
 	RETURN_CODE rescode = run();
 	curl_global_cleanup();
@@ -191,24 +200,6 @@ static void tts_task(void *pvParameters) {
 	vTaskDelete(NULL);
 }
 
-static void tts_play(void *pvParameters) {
-	struct tts_info tts_r;
-	i2s_start(I2S_NUM_0);
-	while (1) {
-		if (uxQueueMessagesWaiting(data_que) >= 10)
-			break;
-		vTaskDelay(10 / portTICK_PERIOD_MS);
-	}
-	while (1) {
-		if (uxQueueMessagesWaiting(data_que) == 0)
-			break;
-		xQueueReceive(data_que, &tts_r, portMAX_DELAY);
-		i2s_write_bytes(I2S_NUM_0, tts_r.data, tts_r.len, portMAX_DELAY);
-	}
-	i2s_stop(I2S_NUM_0);
-	vTaskDelete(NULL);
-}
-
 void app_main() {
 	esp_err_t ret = nvs_flash_init();
 	if (ret == ESP_ERR_NVS_NO_FREE_PAGES
@@ -217,8 +208,6 @@ void app_main() {
 		ret = nvs_flash_init();
 	}
 	ESP_ERROR_CHECK(ret);
-
-	data_que = xQueueCreate(512, sizeof(struct tts_info));	// 1M+512*4k内存,放在app_main是因为多个任务使用该消息队列
 
 #if EXAMPLE_ESP_WIFI_MODE_AP
 	printf("ESP_WIFI_MODE_AP\n");
@@ -231,8 +220,7 @@ void app_main() {
 	audio_recorder_AC101_init();
 //	xTaskCreatePinnedToCore(&alexa__AC101_task, "alexa__AC101_task", 8096, NULL,
 //			2, NULL, 1);
-	xTaskCreatePinnedToCore(&tts_task, "tts_task", 8096 * 2, NULL, 2, NULL, 1);
-	xTaskCreatePinnedToCore(&tts_play, "tts_play", 8096, NULL, 2, NULL, 1);
+	xTaskCreatePinnedToCore(&asr_task, "asr_task", 8096 * 2, NULL, 2, NULL, 1);
+//	xTaskCreatePinnedToCore(&tts_play, "tts_play", 8096, NULL, 2, NULL, 1);
 
 }
-
