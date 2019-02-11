@@ -1,5 +1,5 @@
-# esp32_baidu_tts
-Baidu tts based on esp32
+# esp32_baidu_asr
+Baidu asr based on esp32
 
 /* 移植百度语音识别ASR到ESP32平台，已实现ASR识别 */
 
